@@ -100,7 +100,7 @@ void ExTimerStop(
 
     LockRelease(&m_globalTimerList.TimerListLock, oldState);
 
-    // felebreszted az osszes threadet ami ettol a timertol fugg 
+    // felebreszted az osszes threadet ami ettol a timertol fugg
     ExEventSignal(&Timer->TimerEvent);
 }
 
@@ -114,7 +114,8 @@ void ExTimerWait(
         return;
     }
 
-    if (Timer->Type != ExTimerTypeRelativePeriodic && IomuGetSystemTimeUs() >= Timer->TriggerTimeUs)
+    if ((Timer->Type != ExTimerTypeRelativePeriodic || Timer->ReloadTimeUs == 0) &&
+        IomuGetSystemTimeUs() >= Timer->TriggerTimeUs)
     {
         return;
     }
@@ -149,7 +150,7 @@ void ExTimerSystemPreinit(void)
     memzero(&m_globalTimerList, sizeof(m_globalTimerList));
     LockInit(&m_globalTimerList.TimerListLock);
     LockSetName(&m_globalTimerList.TimerListLock, "TimerList");
-    InitializeListHead(&m_globalTimerList.TimerListHead);   // csinal belole egy empty listet
+    InitializeListHead(&m_globalTimerList.TimerListHead); // csinal belole egy empty listet
 }
 
 static INT64(CDECL _ExTimerCompareListElems)(
@@ -169,8 +170,7 @@ static INT64(CDECL _ExTimerCompareListElems)(
     return ExTimerCompareTimers(pFirstTimer, pSecondTimer);
 }
 
-void
-ExTimerCheckAll(void)
+void ExTimerCheckAll(void)
 {
     INTR_STATE oldState;
     QWORD now;
@@ -186,19 +186,20 @@ ExTimerCheckAll(void)
                                    EX_TIMER, TimerListElem);
 
         // mivel sorted ha az elso nem jart le a tobbi sem
-        if (pTimer->TriggerTimeUs > now) break;
+        if (pTimer->TriggerTimeUs > now)
+            break;
 
         // ha lejart
         RemoveEntryList(&pTimer->TimerListElem);
         InitializeListHead(&pTimer->TimerListElem); // ezt meg mindig nem ertem
 
-        ExEventSignal(&pTimer->TimerEvent);          // felebreszti a threadeket amik ra varnak
+        ExEventSignal(&pTimer->TimerEvent); // felebreszti a threadeket amik ra varnak
 
         if (pTimer->Type == ExTimerTypeRelativePeriodic)
         {
             ExEventClearSignal(&pTimer->TimerEvent); // the next wait must block again
             pTimer->TriggerTimeUs += pTimer->ReloadTimeUs;
-            while (pTimer->TriggerTimeUs <= now)        // fell behind: skip missed periods | ez if volt atirtam while ra
+            if (pTimer->TriggerTimeUs <= now) // fell behind: skip missed periods
             {
                 pTimer->TriggerTimeUs = now + pTimer->ReloadTimeUs;
             }
