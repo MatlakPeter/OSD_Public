@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ex_event.h"
+
 typedef enum _EX_TIMER_TYPE
 {
     ExTimerTypeAbsolute,
@@ -30,6 +32,7 @@ typedef struct _EX_TIMER
 } EX_TIMER, *PEX_TIMER;
 
 void ExTimerSystemPreinit(void);
+
 void ExTimerCheckAll(void);
 
 //******************************************************************************
@@ -125,4 +128,12 @@ INT64
 ExTimerCompareTimers(
     IN      PEX_TIMER     FirstElem,
     IN      PEX_TIMER     SecondElem
+    );
+
+static
+INT64
+(CDECL _ExTimerCompareListElems)(
+    IN      PLIST_ENTRY     FirstElem,
+    IN      PLIST_ENTRY     SecondElem,
+    IN_OPT  PVOID           Context
     );

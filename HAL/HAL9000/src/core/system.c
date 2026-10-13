@@ -24,6 +24,7 @@
 #include "boot_module.h"
 #include "display.h"
 #include "debug_database.h"
+#include "ex_timer.h"
 
 #define NO_OF_TSS_STACKS             7
 STATIC_ASSERT(NO_OF_TSS_STACKS <= NO_OF_IST);
