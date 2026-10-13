@@ -59,7 +59,11 @@ ExTimerInit(
         Timer->TriggerTimeUs = Time;
     }
 
+    INTR_STATE oldState;
+
+    LockAcquire(&m_globalTimerList.TimerListLock, &oldState);
     InsertOrderedList(&m_globalTimerList.TimerListHead, &Timer->TimerListElem, _ExTimerCompareListElems, NULL);
+    LockRelease(&m_globalTimerList.TimerListLock, oldState);
 
     return status;
 }
@@ -91,12 +95,18 @@ void ExTimerStop(
 
     LockAcquire(&m_globalTimerList.TimerListLock, &oldState);
     Timer->TimerStarted = FALSE;
-    // if (!IsListEmpty(&Timer->TimerListElem))        // megnezed hogy bent van global listben
-    // {
-    //     RemoveEntryList(&Timer->TimerListElem);
-    //     InitializeListHead(&Timer->TimerListElem);  // fogalmam sincs, empty listet csinal belole, NULL helyet ami a memzerobol ered
-    // }
-    RemoveEntryList(&Timer->TimerListElem);
+    /*
+    The tests call ExTimerStop(&timer) and then ExTimerUninit(&timer), 
+    and Uninit calls Stop again before it sets TimerUninited. 
+    So the same entry is removed twice. After the first removal, 
+    RemoveEntryList leaves the hook holding pointers to its old neighbors, 
+    and the second removal writes through them.
+    */
+    if (!IsListEmpty(&Timer->TimerListElem))        // megnezed hogy bent van global listben
+    {
+        RemoveEntryList(&Timer->TimerListElem);
+        InitializeListHead(&Timer->TimerListElem);  // legit elbasz mindent gondolj bele
+    }
 
     LockRelease(&m_globalTimerList.TimerListLock, oldState);
 
@@ -130,10 +140,7 @@ void ExTimerUninit(
     ASSERT(Timer != NULL);
 
     ExTimerStop(Timer);
-
     Timer->TimerUninited = TRUE;
-
-    ExTimerStop(Timer);
     ExEventDestroy(&Timer->TimerEvent);
 }
 

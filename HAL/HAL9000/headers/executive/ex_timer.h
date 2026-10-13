@@ -129,11 +129,3 @@ ExTimerCompareTimers(
     IN      PEX_TIMER     FirstElem,
     IN      PEX_TIMER     SecondElem
     );
-
-static
-INT64
-(CDECL _ExTimerCompareListElems)(
-    IN      PLIST_ENTRY     FirstElem,
-    IN      PLIST_ENTRY     SecondElem,
-    IN_OPT  PVOID           Context
-    );
