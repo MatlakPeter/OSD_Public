@@ -42,6 +42,8 @@ ExTimerInit(
         Timer->TriggerTimeUs = Time;
     }
 
+    InsertOrderedList(&m_globalTimerList.TimerListHead, &Timer->TimerListElem, CompareTimer, NULL);
+
     return status;
 }
 
@@ -112,4 +114,29 @@ ExTimerCompareTimers(
 )
 {
     return FirstElem->TriggerTimeUs - SecondElem->TriggerTimeUs;
+}
+
+typedef struct _GLOBAL_TIMER_LIST
+{
+    LOCK        TimerListLock;
+    LIST_ENTRY  TimerListHead;
+} GLOBAL_TIMER_LIST;
+
+static GLOBAL_TIMER_LIST m_globalTimerList;
+
+void
+ExTimerSystemPreinit(void)
+{
+    memzero(&m_globalTimerList, sizeof(m_globalTimerList));
+    LockInit(&m_globalTimerList.TimerListLock);
+    LockSetName(&m_globalTimerList.TimerListLock, "TimerList");
+    InitializeListHead(&m_globalTimerList.TimerListHead);
+}
+
+PFUNC_CompareFunction CompareTimer(PLIST_ENTRY FirstElem, PLIST_ENTRY SecondElem, PVOID Context)
+{
+    PEX_TIMER FirstTimer = CONTAINING_RECORD(FirstElem, EX_TIMER, TimerListElem);
+    PEX_TIMER SecondTimer = CONTAINING_RECORD(SecondElem, EX_TIMER, TimerListElem);
+
+    return ExTimerCompareTimers(FirstTimer, SecondTimer);
 }

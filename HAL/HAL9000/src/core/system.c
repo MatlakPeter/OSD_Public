@@ -65,6 +65,7 @@ SystemPreinit(
     BootModulesPreinit();
     DumpPreinit();
     ExEventSystemPreinit();
+    ExTimerSystemPreinit();
     MutexSystemPreinit();
     ThreadSystemPreinit();
     printSystemPreinit(&displayInformation);
