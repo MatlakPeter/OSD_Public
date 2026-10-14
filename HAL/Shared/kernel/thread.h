@@ -119,3 +119,20 @@ THREAD_PRIORITY
 ThreadGetPriority(
     IN_OPT  PTHREAD             Thread
     );
+
+    INT64(CDECL _ThreadPriorityCopmpareListElems)(
+    IN PLIST_ENTRY FirstElem,
+    IN PLIST_ENTRY SecondElem,
+    IN_OPT PVOID Context);
+
+static
+BOOLEAN
+_ThreadShouldPreemptCurrent(
+    void
+    );
+
+static
+STATUS
+_ThreadPreemptCheckIpi(
+    IN_OPT PVOID Context
+);

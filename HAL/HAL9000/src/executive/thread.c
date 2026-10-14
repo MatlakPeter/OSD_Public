@@ -14,6 +14,7 @@
 #include "cal_atomic.h"
 #include "cal_assembly.h"
 #include "cal_seh.h"
+#include "smp.h"
 
 #define TID_INCREMENT               4
 
@@ -42,6 +43,9 @@ typedef struct _THREAD_SYSTEM_DATA
 
     _Guarded_by_(ReadyThreadsLock)
     LIST_ENTRY          ReadyThreadsList;
+    
+    _Guarded_by_(ReadyThreadsLock);
+    THREAD_PRIORITY     RunningThreadsMinPriority;
 } THREAD_SYSTEM_DATA, *PTHREAD_SYSTEM_DATA;
 
 // DO NOT CHANGE THE NAME OF THIS VARIABLE
@@ -508,7 +512,8 @@ ThreadYield(
     LockAcquire(&m_threadSystemData.ReadyThreadsLock, &dummyState);
     if (pThread != pCpu->ThreadData.IdleThread)
     {
-        InsertTailList(&m_threadSystemData.ReadyThreadsList, &pThread->ReadyList);
+        // ez round robin mert a compare addig megy amig <0 lesz
+        InsertOrderedList(&m_threadSystemData.ReadyThreadsList, &pThread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
     }
     if (!bForcedYield)
     {
@@ -563,10 +568,24 @@ ThreadUnblock(
     ASSERT(ThreadStateBlocked == Thread->State);
 
     LockAcquire(&m_threadSystemData.ReadyThreadsLock, &dummyState);
-    InsertTailList(&m_threadSystemData.ReadyThreadsList, &Thread->ReadyList);
+    InsertOrderedList(&m_threadSystemData.ReadyThreadsList, &Thread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
     Thread->State = ThreadStateReady;
     LockRelease(&m_threadSystemData.ReadyThreadsLock, dummyState );
     LockRelease(&Thread->BlockLock, oldState);
+
+    // interruptolja az osszes coret magan kivul es megnezi hogy kell e csereljen
+    SmpSendGenericIpi(
+        _ThreadPreemptCheckIpi,
+        NULL,
+        NULL, 
+        NULL,
+        FALSE);
+
+    // megnezi magat
+    if (_ThreadShouldPreemptCurrent())
+    {
+        ThreadYield();
+    }
 }
 
 void
@@ -690,7 +709,15 @@ ThreadSetPriority(
 {
     ASSERT(ThreadPriorityLowest <= NewPriority && NewPriority <= ThreadPriorityMaximum);
 
-    GetCurrentThread()->Priority = NewPriority;
+    PTHREAD CurrentThread = GetCurrentThread();
+    THREAD_PRIORITY PreviousPrirority = CurrentThread->Priority;
+
+    CurrentThread->Priority = NewPriority;
+
+    if(NewPriority < PreviousPrirority)
+    {
+        ThreadYield();
+    }
 }
 
 STATUS
@@ -739,6 +766,7 @@ SetCurrentThread(
         pCpu->StackSize = Thread->StackSize;
         pCpu->Tss.Rsp[0] = (QWORD) Thread->InitialStackBase;
     }
+
 }
 
 static
@@ -1276,4 +1304,70 @@ _ThreadKernelFunction(
 
     ThreadExit(exitStatus);
     NOT_REACHED;
+}
+
+static
+INT64
+CompareThreadPriority(PTHREAD FirstThread, PTHREAD SecondThread)
+{
+    return FirstThread->Priority - SecondThread->Priority;
+}
+
+INT64(CDECL _ThreadPriorityCopmpareListElems)(
+    IN PLIST_ENTRY FirstElem,
+    IN PLIST_ENTRY SecondElem,
+    IN_OPT PVOID Context)
+{
+    PTHREAD pFirstThread;
+    PTHREAD pSecondThread;
+
+    // need this line otherwise compile error
+    UNREFERENCED_PARAMETER(Context);
+
+    pFirstThread = CONTAINING_RECORD(FirstElem, THREAD, ReadyList);
+    pSecondThread = CONTAINING_RECORD(SecondElem, THREAD, ReadyList);
+
+    return CompareThreadPriority(pFirstThread, pSecondThread);
+}
+
+static
+BOOLEAN
+_ThreadShouldPreemptCurrent(
+    void
+    )
+{
+    INTR_STATE oldState;
+    BOOLEAN bShouldPreempt = FALSE;
+    PTHREAD pCurrent = GetCurrentThread();
+
+    LockAcquire(&m_threadSystemData.ReadyThreadsLock, &oldState);
+
+    if (!IsListEmpty(&m_threadSystemData.ReadyThreadsList))
+    {
+        PLIST_ENTRY pHead = m_threadSystemData.ReadyThreadsList.Flink;
+        PTHREAD pBest = CONTAINING_RECORD(pHead, THREAD, ReadyList);
+
+        bShouldPreempt = ThreadGetPriority(pBest) > ThreadGetPriority(pCurrent);
+    }
+
+    LockRelease(&m_threadSystemData.ReadyThreadsLock, oldState);
+
+    return bShouldPreempt;
+}
+
+static
+STATUS
+_ThreadPreemptCheckIpi(
+    IN_OPT PVOID Context
+    )
+{
+    UNREFERENCED_PARAMETER(Context);
+
+    if (_ThreadShouldPreemptCurrent())
+    {
+        PPCPU pCpu = GetCurrentPcpu();
+        pCpu->ThreadData.YieldOnInterruptReturn = TRUE;
+    }
+
+    return STATUS_SUCCESS;
 }
