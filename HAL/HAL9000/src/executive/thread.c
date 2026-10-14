@@ -564,19 +564,23 @@ ThreadUnblock(
 
     ASSERT(ThreadStateBlocked == Thread->State);
 
+    THREAD_PRIORITY newPriority = Thread->Priority;
+
     LockAcquire(&m_threadSystemData.ReadyThreadsLock, &dummyState);
     InsertOrderedList(&m_threadSystemData.ReadyThreadsList, &Thread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
     Thread->State = ThreadStateReady;
     LockRelease(&m_threadSystemData.ReadyThreadsLock, dummyState );
     LockRelease(&Thread->BlockLock, oldState);
 
+    // _ThreadPreemptLowerPriorityCpus(newPriority);
+
     // interruptolja az osszes coret magan kivul es megnezi hogy kell e csereljen
-    SmpSendGenericIpi(
-        _ThreadPreemptCheckIpi,
-        NULL,
-        NULL, 
-        NULL,
-        FALSE);
+    // SmpSendGenericIpi(
+    //     _ThreadPreemptCheckIpi,
+    //     NULL,
+    //     NULL, 
+    //     NULL,
+    //     FALSE);
 }
 
 void
@@ -1369,8 +1373,51 @@ void
 ThreadYieldIfPreempted()
 {
     // megnezi magat
+
+
     if (_ThreadShouldPreemptCurrent())
     {
         ThreadYield();
+    }
+}
+
+static
+void
+_ThreadPreemptLowerPriorityCpus(
+    IN      THREAD_PRIORITY     NewPriority
+    )
+{
+    PLIST_ENTRY pCpuListHead = NULL;
+    PPCPU pSelf = GetCurrentPcpu();
+
+    SmpGetCpuList(&pCpuListHead);
+
+    for (PLIST_ENTRY pEntry = pCpuListHead->Flink;
+         pEntry != pCpuListHead;
+         pEntry = pEntry->Flink)
+    {
+        PPCPU pCpu = CONTAINING_RECORD(pEntry, PCPU, ListEntry);
+        PTHREAD pRunning = pCpu->ThreadData.CurrentThread;
+        SMP_DESTINATION dest = { 0 };
+
+        // a sajat cput a msik function intezi
+        if (pCpu == pSelf)
+        {
+            continue;
+        }
+
+        if (pRunning == pCpu->ThreadData.IdleThread)
+        {
+            continue;
+        }
+
+        if (ThreadGetPriority(pRunning) >= NewPriority)
+        {
+            continue;
+        }
+
+        dest.Cpu.ApicId = pCpu->ApicId;
+        SmpSendGenericIpiEx(_ThreadPreemptCheckIpi, NULL, NULL, NULL, FALSE,
+                            SmpIpiSendToCpu, dest);
     }
 }
