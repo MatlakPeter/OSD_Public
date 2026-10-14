@@ -136,3 +136,6 @@ STATUS
 _ThreadPreemptCheckIpi(
     IN_OPT PVOID Context
 );
+
+void
+ThreadYieldIfPreempted();

@@ -43,9 +43,6 @@ typedef struct _THREAD_SYSTEM_DATA
 
     _Guarded_by_(ReadyThreadsLock)
     LIST_ENTRY          ReadyThreadsList;
-    
-    _Guarded_by_(ReadyThreadsLock);
-    THREAD_PRIORITY     RunningThreadsMinPriority;
 } THREAD_SYSTEM_DATA, *PTHREAD_SYSTEM_DATA;
 
 // DO NOT CHANGE THE NAME OF THIS VARIABLE
@@ -580,12 +577,6 @@ ThreadUnblock(
         NULL, 
         NULL,
         FALSE);
-
-    // megnezi magat
-    if (_ThreadShouldPreemptCurrent())
-    {
-        ThreadYield();
-    }
 }
 
 void
@@ -716,7 +707,8 @@ ThreadSetPriority(
 
     if(NewPriority < PreviousPrirority)
     {
-        ThreadYield();
+        // ThreadYield();
+        ThreadYieldIfPreempted();
     }
 }
 
@@ -1310,7 +1302,8 @@ static
 INT64
 CompareThreadPriority(PTHREAD FirstThread, PTHREAD SecondThread)
 {
-    return FirstThread->Priority - SecondThread->Priority;
+    // ide kellett az int64 cast mert ugy tunik a type nem signed es akkor atwrapel minuszba
+    return (INT64)SecondThread->Priority - (INT64)FirstThread->Priority;
 }
 
 INT64(CDECL _ThreadPriorityCopmpareListElems)(
@@ -1370,4 +1363,14 @@ _ThreadPreemptCheckIpi(
     }
 
     return STATUS_SUCCESS;
+}
+
+void
+ThreadYieldIfPreempted()
+{
+    // megnezi magat
+    if (_ThreadShouldPreemptCurrent())
+    {
+        ThreadYield();
+    }
 }
