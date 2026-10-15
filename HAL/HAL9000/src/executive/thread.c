@@ -575,12 +575,14 @@ ThreadUnblock(
     // _ThreadPreemptLowerPriorityCpus(newPriority);
 
     // interruptolja az osszes coret magan kivul es megnezi hogy kell e csereljen
-    // SmpSendGenericIpi(
-    //     _ThreadPreemptCheckIpi,
-    //     NULL,
-    //     NULL, 
-    //     NULL,
-    //     FALSE);
+    SmpSendGenericIpi(
+        _ThreadPreemptCheckIpi,
+        NULL,
+        NULL, 
+        NULL,
+        FALSE);
+
+    ThreadYieldIfPreempted();
 }
 
 void
