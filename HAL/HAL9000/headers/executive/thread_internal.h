@@ -42,14 +42,10 @@ typedef struct _THREAD
     TID                     Id;
     char*                   Name;
 
-    LOCK                    PriorityProtectionLock;
-
     // Currently the thread priority is not used for anything
-    _Guarded_by_(PriorityProtectionLock)
     THREAD_PRIORITY         Priority;
     THREAD_STATE            State;
 
-    _Guarded_by_(PriorityProtectionLock)
     THREAD_PRIORITY         RealPriority;
 
     LIST_ENTRY              AcquiredMutexesList;
@@ -307,5 +303,10 @@ SetCurrentThread(
 //******************************************************************************
 void
 ThreadSetPriority(
+    IN      THREAD_PRIORITY     NewPriority
+    );
+
+void
+ThreadPreemptLowerPriorityCpus(
     IN      THREAD_PRIORITY     NewPriority
     );

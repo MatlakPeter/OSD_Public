@@ -2,6 +2,7 @@
 #include "thread_internal.h"
 #include "mutex.h"
 #include "thread.h"
+#include "lock_common.h"
 
 #define MUTEX_MAX_RECURSIVITY_DEPTH MAX_BYTE
 
@@ -15,6 +16,11 @@ typedef struct _MUTEX_SYSTEM_DATA
 
 static MUTEX_SYSTEM_DATA m_mutexData;
 
+static LOCK m_donationLock;
+
+static BOOLEAN _MutexDonatePriority(IN PTHREAD Donor, IN PMUTEX FirstMutex);
+static PTHREAD _MutexRemoveBestWaiter(INOUT PMUTEX Mutex);
+
 STATUS
 MutexSystemPreinit(
     void)
@@ -22,6 +28,8 @@ MutexSystemPreinit(
     memzero(&m_mutexData, sizeof(MUTEX_SYSTEM_DATA));
     LockInit(&m_mutexData.Lock);
     LockSetName(&m_mutexData.Lock, "MutexList");
+    LockInit(&m_donationLock);
+    LockSetName(&m_donationLock, "Donation");
     InitializeListHead(&m_mutexData.MutexList);
 
     return STATUS_SUCCESS;
@@ -91,7 +99,10 @@ void MutexAcquire(
 {
     INTR_STATE dummyState;
     INTR_STATE oldState;
+    INTR_STATE donationState;
     PTHREAD pCurrentThread = GetCurrentThread();
+    BOOLEAN bPreemptOthers = FALSE;
+    THREAD_PRIORITY donatedPriority = ThreadPriorityLowest;
 
     ASSERT(NULL != Mutex);
     ASSERT(NULL != pCurrentThread);
@@ -107,26 +118,34 @@ void MutexAcquire(
     oldState = CpuIntrDisable();
 
     LockAcquire(&Mutex->MutexLock, &dummyState);
+
     if (NULL == Mutex->Holder)
     {
+        MutexDonationLock(&donationState);
+
         Mutex->Holder = pCurrentThread;
         Mutex->CurrentRecursivityDepth = 1;
+        InsertTailList(&pCurrentThread->AcquiredMutexesList, &Mutex->AcquiredMutexList);
 
-        INTR_STATE donationState;
-        LockAcquire(&pCurrentThread->PriorityProtectionLock, &donationState);
-        pCurrentThread->WaitingMutex = Mutex;
-        LockRelease(&pCurrentThread->PriorityProtectionLock, donationState);
+        MutexDonationUnlock(donationState);
     }
 
     while (Mutex->Holder != pCurrentThread)
     {
-        InsertOrderedList(&Mutex->WaitingList, &pCurrentThread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
+        MutexDonationLock(&donationState);
 
-        INTR_STATE donationState;
-        LockAcquire(&pCurrentThread->PriorityProtectionLock, &donationState);
+        InsertOrderedList(&Mutex->WaitingList, &pCurrentThread->ReadyList,
+                          _ThreadPriorityCopmpareListElems, NULL);
         pCurrentThread->WaitingMutex = Mutex;
-        BOOLEAN bWasReady = _MutexDonatePriority(pCurrentThread, Mutex); // ha true kene ipi
-        LockRelease(&pCurrentThread->PriorityProtectionLock, donationState);
+        bPreemptOthers = _MutexDonatePriority(pCurrentThread, Mutex);
+        donatedPriority = pCurrentThread->Priority;
+
+        MutexDonationUnlock(donationState);
+
+        if (bPreemptOthers)
+        {
+            ThreadPreemptLowerPriorityCpus(donatedPriority);
+        }
 
         ThreadTakeBlockLock();
         LockRelease(&Mutex->MutexLock, dummyState);
@@ -147,10 +166,12 @@ void MutexRelease(
     INOUT PMUTEX Mutex)
 {
     INTR_STATE oldState;
+    INTR_STATE donationState;
+    PTHREAD pCurrentThread = GetCurrentThread();
     PLIST_ENTRY pEntry;
 
     ASSERT(NULL != Mutex);
-    ASSERT(GetCurrentThread() == Mutex->Holder);
+    ASSERT(pCurrentThread == Mutex->Holder);
 
     if (Mutex->CurrentRecursivityDepth > 1)
     {
@@ -161,20 +182,33 @@ void MutexRelease(
     pEntry = NULL;
 
     LockAcquire(&Mutex->MutexLock, &oldState);
+    MutexDonationLock(&donationState);
 
-    pEntry = RemoveHeadList(&Mutex->WaitingList);
-    if (pEntry != &Mutex->WaitingList)
+    RemoveEntryList(&Mutex->AcquiredMutexList);
+
+    PTHREAD pNext = _MutexRemoveBestWaiter(Mutex);
+
+    if (NULL != pNext)
     {
-        PTHREAD pThread = CONTAINING_RECORD(pEntry, THREAD, ReadyList);
-
-        // wakeup first thread
-        Mutex->Holder = pThread;
+        Mutex->Holder = pNext;
         Mutex->CurrentRecursivityDepth = 1;
-        ThreadUnblock(pThread);
+        pNext->WaitingMutex = NULL;
+        InsertTailList(&pNext->AcquiredMutexesList, &Mutex->AcquiredMutexList);
+
+        MutexRecomputeThreadPriority(pNext);
     }
     else
     {
         Mutex->Holder = NULL;
+    }
+
+    MutexRecomputeThreadPriority(pCurrentThread);
+
+    MutexDonationUnlock(donationState);
+
+    if (NULL != pNext)
+    {
+        ThreadUnblock(pNext);
     }
 
     _Analysis_assume_lock_released_(*Mutex);
@@ -201,17 +235,25 @@ MutexDestroy(
     memzero(Mutex, sizeof(MUTEX));
 }
 
+void MutexDonationLock(OUT INTR_STATE *State)
+{
+    LockAcquire(&m_donationLock, State);
+}
 
-static 
-BOOLEAN
+void MutexDonationUnlock(IN INTR_STATE State)
+{
+    LockRelease(&m_donationLock, State);
+}
+
+static BOOLEAN
 _MutexDonatePriority(
     IN PTHREAD Donor,
     IN PMUTEX FirstMutex)
 {
     THREAD_PRIORITY donated = Donor->Priority;
     PMUTEX pMutex = FirstMutex;
+    BOOLEAN bReadyChanged = FALSE;
 
-    // MAX_DONATION_DEPTH is 8
     for (DWORD depth = 0; depth < 8 && NULL != pMutex; ++depth)
     {
         PTHREAD pHolder = pMutex->Holder;
@@ -222,8 +264,68 @@ _MutexDonatePriority(
         }
 
         pHolder->Priority = donated;
-        BOOLEAN bWasReady = ThreadRepositionAfterPriorityChange(pHolder);
+
+        if (ThreadRepositionAfterPriorityChange(pHolder))
+        {
+            bReadyChanged = TRUE;
+        }
 
         pMutex = pHolder->WaitingMutex;
     }
+
+    return bReadyChanged;
+}
+
+void MutexRecomputeThreadPriority(
+    INOUT PTHREAD Thread)
+{
+    THREAD_PRIORITY best = Thread->RealPriority;
+
+    for (PLIST_ENTRY pM = Thread->AcquiredMutexesList.Flink;
+         pM != &Thread->AcquiredMutexesList;
+         pM = pM->Flink)
+    {
+        PMUTEX pMutex = CONTAINING_RECORD(pM, MUTEX, AcquiredMutexList);
+
+        for (PLIST_ENTRY pW = pMutex->WaitingList.Flink;
+             pW != &pMutex->WaitingList;
+             pW = pW->Flink)
+        {
+            PTHREAD pWaiter = CONTAINING_RECORD(pW, THREAD, ReadyList);
+
+            if (pWaiter->Priority > best)
+            {
+                best = pWaiter->Priority;
+            }
+        }
+    }
+
+    Thread->Priority = best;
+}
+
+static PTHREAD
+_MutexRemoveBestWaiter(
+    INOUT PMUTEX Mutex)
+{
+    PLIST_ENTRY pBest = NULL;
+
+    for (PLIST_ENTRY pE = Mutex->WaitingList.Flink;
+         pE != &Mutex->WaitingList;
+         pE = pE->Flink)
+    {
+        if (NULL == pBest ||
+            CONTAINING_RECORD(pE, THREAD, ReadyList)->Priority >
+                CONTAINING_RECORD(pBest, THREAD, ReadyList)->Priority)
+        {
+            pBest = pE;
+        }
+    }
+
+    if (NULL == pBest)
+    {
+        return NULL;
+    }
+
+    RemoveEntryList(pBest);
+    return CONTAINING_RECORD(pBest, THREAD, ReadyList);
 }

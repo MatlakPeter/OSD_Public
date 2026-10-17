@@ -111,7 +111,12 @@ MutexDestroy(
     INOUT PMUTEX Mutex);
 
 static
-void
+BOOLEAN
 _MutexDonatePriority(
     IN PTHREAD Donor,
     IN PMUTEX FirstMutex);
+
+void MutexDonationLock(OUT INTR_STATE* State);
+void MutexDonationUnlock(IN INTR_STATE State);
+
+void MutexRecomputeThreadPriority(INOUT PTHREAD Thread);
