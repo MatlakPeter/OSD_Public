@@ -34,19 +34,24 @@ extern FUNC_ThreadSwitch            ThreadSwitch;
 typedef struct _THREAD_SYSTEM_DATA
 {
     LOCK                AllThreadsLock;
-
+    
     // DO NOT CHANGE THE NAME OF THIS FIELD
     _Guarded_by_(AllThreadsLock)
     LIST_ENTRY          AllThreadsList;
-
+    
     LOCK                ReadyThreadsLock;
-
+    
     _Guarded_by_(ReadyThreadsLock)
     LIST_ENTRY          ReadyThreadsList;
 } THREAD_SYSTEM_DATA, *PTHREAD_SYSTEM_DATA;
 
 // DO NOT CHANGE THE NAME OF THIS VARIABLE
 static THREAD_SYSTEM_DATA m_threadSystemData;
+
+THREAD_SYSTEM_DATA* GetThreadSystemData()
+{
+    return &m_threadSystemData;
+}
 
 ALWAYS_INLINE
 static
@@ -564,7 +569,7 @@ ThreadUnblock(
 
     ASSERT(ThreadStateBlocked == Thread->State);
 
-    THREAD_PRIORITY newPriority = Thread->Priority;
+    // THREAD_PRIORITY newPriority = Thread->Priority;
 
     LockAcquire(&m_threadSystemData.ReadyThreadsLock, &dummyState);
     InsertOrderedList(&m_threadSystemData.ReadyThreadsList, &Thread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
@@ -850,6 +855,9 @@ _ThreadInit(
         pThread->Id = _ThreadSystemGetNextTid();
         pThread->State = ThreadStateBlocked;
         pThread->Priority = Priority;
+        pThread->RealPriority = Priority;
+        pThread->WaitingMutex = NULL;
+        InitializeListHead(&pThread->AcquiredMutexesList);
 
         LockInit(&pThread->BlockLock);
         LockSetName(&pThread->BlockLock, "ThrBlock");
@@ -1422,4 +1430,25 @@ _ThreadPreemptLowerPriorityCpus(
         SmpSendGenericIpiEx(_ThreadPreemptCheckIpi, NULL, NULL, NULL, FALSE,
                             SmpIpiSendToCpu, dest);
     }
+}
+
+BOOLEAN
+ThreadRepositionAfterPriorityChange(
+    INOUT PTHREAD Thread)
+{
+    INTR_STATE oldState;
+    BOOLEAN bWasReady = FALSE;
+
+    ASSERT(NULL != Thread);
+
+    LockAcquire(&m_threadSystemData.ReadyThreadsLock, &oldState);
+    if (ThreadStateReady == Thread->State)
+    {
+        RemoveEntryList(&Thread->ReadyList);
+        InsertOrderedList(&m_threadSystemData.ReadyThreadsList, &Thread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
+        bWasReady = TRUE;
+    }
+    LockRelease(&m_threadSystemData.ReadyThreadsLock, oldState);
+
+    return bWasReady;
 }

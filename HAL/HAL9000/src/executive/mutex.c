@@ -1,23 +1,23 @@
 #include "HAL9000.h"
 #include "thread_internal.h"
 #include "mutex.h"
+#include "thread.h"
 
-#define MUTEX_MAX_RECURSIVITY_DEPTH         MAX_BYTE
+#define MUTEX_MAX_RECURSIVITY_DEPTH MAX_BYTE
 
 typedef struct _MUTEX_SYSTEM_DATA
 {
-    LOCK                  Lock;
+    LOCK Lock;
 
     _Guarded_by_(Lock)
-    LIST_ENTRY            MutexList;
+        LIST_ENTRY MutexList;
 } MUTEX_SYSTEM_DATA, *PMUTEX_SYSTEM_DATA;
 
 static MUTEX_SYSTEM_DATA m_mutexData;
 
 STATUS
 MutexSystemPreinit(
-    void
-    )
+    void)
 {
     memzero(&m_mutexData, sizeof(MUTEX_SYSTEM_DATA));
     LockInit(&m_mutexData.Lock);
@@ -27,11 +27,9 @@ MutexSystemPreinit(
     return STATUS_SUCCESS;
 }
 
-void
-MutexSystemGetMutexList(
-    OUT PLOCK*             ListLock,
-    OUT PLIST_ENTRY*       ListHead
-    )
+void MutexSystemGetMutexList(
+    OUT PLOCK *ListLock,
+    OUT PLIST_ENTRY *ListHead)
 {
     ASSERT(ListLock != NULL);
     ASSERT(ListHead != NULL);
@@ -40,16 +38,14 @@ MutexSystemGetMutexList(
     *ListHead = &m_mutexData.MutexList;
 }
 
-_No_competing_thread_
-void
+_No_competing_thread_ void
 MutexInit(
-    OUT         PMUTEX      Mutex,
-    IN          BOOLEAN     Recursive
-    )
+    OUT PMUTEX Mutex,
+    IN BOOLEAN Recursive)
 {
     INTR_STATE oldState;
 
-    ASSERT( NULL != Mutex );
+    ASSERT(NULL != Mutex);
 
     memzero(Mutex, sizeof(MUTEX));
 
@@ -57,6 +53,7 @@ MutexInit(
     LockSetName(&Mutex->MutexLock, "MutexLock");
 
     InitializeListHead(&Mutex->WaitingList);
+    InitializeListHead(&Mutex->AcquiredMutexList);
 
     Mutex->MaxRecursivityDepth = Recursive ? MUTEX_MAX_RECURSIVITY_DEPTH : 1;
 
@@ -65,12 +62,10 @@ MutexInit(
     LockRelease(&m_mutexData.Lock, oldState);
 }
 
-_No_competing_thread_
-void
+_No_competing_thread_ void
 MutexSetName(
-    INOUT       PMUTEX      Mutex,
-    IN          char*       Name
-    )
+    INOUT PMUTEX Mutex,
+    IN char *Name)
 {
     INTR_STATE oldState;
     DWORD length;
@@ -91,21 +86,19 @@ MutexSetName(
 
 ACQUIRES_EXCL_AND_REENTRANT_LOCK(*Mutex)
 REQUIRES_NOT_HELD_LOCK(*Mutex)
-void
-MutexAcquire(
-    INOUT       PMUTEX      Mutex
-    )
+void MutexAcquire(
+    INOUT PMUTEX Mutex)
 {
     INTR_STATE dummyState;
     INTR_STATE oldState;
     PTHREAD pCurrentThread = GetCurrentThread();
 
-    ASSERT( NULL != Mutex);
-    ASSERT( NULL != pCurrentThread );
+    ASSERT(NULL != Mutex);
+    ASSERT(NULL != pCurrentThread);
 
     if (pCurrentThread == Mutex->Holder)
     {
-        ASSERT( Mutex->CurrentRecursivityDepth < Mutex->MaxRecursivityDepth );
+        ASSERT(Mutex->CurrentRecursivityDepth < Mutex->MaxRecursivityDepth);
 
         Mutex->CurrentRecursivityDepth++;
         return;
@@ -113,20 +106,32 @@ MutexAcquire(
 
     oldState = CpuIntrDisable();
 
-    LockAcquire(&Mutex->MutexLock, &dummyState );
+    LockAcquire(&Mutex->MutexLock, &dummyState);
     if (NULL == Mutex->Holder)
     {
         Mutex->Holder = pCurrentThread;
         Mutex->CurrentRecursivityDepth = 1;
+
+        INTR_STATE donationState;
+        LockAcquire(&pCurrentThread->PriorityProtectionLock, &donationState);
+        pCurrentThread->WaitingMutex = Mutex;
+        LockRelease(&pCurrentThread->PriorityProtectionLock, donationState);
     }
 
     while (Mutex->Holder != pCurrentThread)
     {
         InsertOrderedList(&Mutex->WaitingList, &pCurrentThread->ReadyList, _ThreadPriorityCopmpareListElems, NULL);
+
+        INTR_STATE donationState;
+        LockAcquire(&pCurrentThread->PriorityProtectionLock, &donationState);
+        pCurrentThread->WaitingMutex = Mutex;
+        BOOLEAN bWasReady = _MutexDonatePriority(pCurrentThread, Mutex); // ha true kene ipi
+        LockRelease(&pCurrentThread->PriorityProtectionLock, donationState);
+
         ThreadTakeBlockLock();
         LockRelease(&Mutex->MutexLock, dummyState);
         ThreadBlock();
-        LockAcquire(&Mutex->MutexLock, &dummyState );
+        LockAcquire(&Mutex->MutexLock, &dummyState);
     }
 
     _Analysis_assume_lock_acquired_(*Mutex);
@@ -138,10 +143,8 @@ MutexAcquire(
 
 RELEASES_EXCL_AND_REENTRANT_LOCK(*Mutex)
 REQUIRES_EXCL_LOCK(*Mutex)
-void
-MutexRelease(
-    INOUT       PMUTEX      Mutex
-    )
+void MutexRelease(
+    INOUT PMUTEX Mutex)
 {
     INTR_STATE oldState;
     PLIST_ENTRY pEntry;
@@ -181,11 +184,9 @@ MutexRelease(
     ThreadYieldIfPreempted();
 }
 
-_No_competing_thread_
-void
+_No_competing_thread_ void
 MutexDestroy(
-    INOUT       PMUTEX      Mutex
-    )
+    INOUT PMUTEX Mutex)
 {
     INTR_STATE oldState;
 
@@ -198,4 +199,31 @@ MutexDestroy(
     LockRelease(&m_mutexData.Lock, oldState);
 
     memzero(Mutex, sizeof(MUTEX));
+}
+
+
+static 
+BOOLEAN
+_MutexDonatePriority(
+    IN PTHREAD Donor,
+    IN PMUTEX FirstMutex)
+{
+    THREAD_PRIORITY donated = Donor->Priority;
+    PMUTEX pMutex = FirstMutex;
+
+    // MAX_DONATION_DEPTH is 8
+    for (DWORD depth = 0; depth < 8 && NULL != pMutex; ++depth)
+    {
+        PTHREAD pHolder = pMutex->Holder;
+
+        if (NULL == pHolder || pHolder->Priority >= donated)
+        {
+            break;
+        }
+
+        pHolder->Priority = donated;
+        BOOLEAN bWasReady = ThreadRepositionAfterPriorityChange(pHolder);
+
+        pMutex = pHolder->WaitingMutex;
+    }
 }
