@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ex_event.h"
+
 typedef enum _EX_TIMER_TYPE
 {
     ExTimerTypeAbsolute,
@@ -20,7 +22,18 @@ typedef struct _EX_TIMER
 
     volatile BOOLEAN    TimerStarted;
     BOOLEAN             TimerUninited;
+
+    // list of threads waiting for this even
+    EX_EVENT TimerEvent;
+
+    // entry for list containing all global timers
+    LIST_ENTRY TimerListElem;
+
 } EX_TIMER, *PEX_TIMER;
+
+void ExTimerSystemPreinit(void);
+
+void ExTimerCheckAll(void);
 
 //******************************************************************************
 // Function:     ExTimerInit

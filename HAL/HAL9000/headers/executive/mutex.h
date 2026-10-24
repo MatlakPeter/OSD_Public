@@ -2,23 +2,25 @@
 
 #include "list.h"
 #include "synch.h"
+#include "thread.h"
 
 typedef struct _MUTEX
 {
     // DO NOT CHANGE THE NAMES OF THESE FIELDS
-    LOCK                MutexLock;
+    LOCK MutexLock;
+
+    _Guarded_by_(MutexLock) char Name[16];
+
+    BYTE CurrentRecursivityDepth;
+    BYTE MaxRecursivityDepth;
 
     _Guarded_by_(MutexLock)
-    char                Name[16];
+        LIST_ENTRY WaitingList;
+    struct _THREAD *Holder;
 
-    BYTE                CurrentRecursivityDepth;
-    BYTE                MaxRecursivityDepth;
+    LIST_ENTRY AcquiredMutexList;
 
-    _Guarded_by_(MutexLock)
-    LIST_ENTRY          WaitingList;
-    struct _THREAD*     Holder;
-    
-    LIST_ENTRY          AllList;
+    LIST_ENTRY AllList;
 } MUTEX, *PMUTEX;
 
 //******************************************************************************
@@ -29,8 +31,7 @@ typedef struct _MUTEX
 //******************************************************************************
 STATUS
 MutexSystemPreinit(
-    void
-    );
+    void);
 
 //******************************************************************************
 // Function:     MutexSystemGetMutexList
@@ -39,11 +40,9 @@ MutexSystemPreinit(
 // Parameter:    OUT PLOCK* ListLock
 // Parameter:    OUT PLIST_ENTRY* ListHead
 //******************************************************************************
-void
-MutexSystemGetMutexList(
-    OUT PLOCK*             ListLock,
-    OUT PLIST_ENTRY*       ListHead
-    );
+void MutexSystemGetMutexList(
+    OUT PLOCK *ListLock,
+    OUT PLIST_ENTRY *ListHead);
 
 //******************************************************************************
 // Function:     MutexInit
@@ -55,12 +54,10 @@ MutexSystemGetMutexList(
 // NOTE:         A recursive mutex must be released as many times as it has been
 //               acquired. It notifies the debugger.
 //******************************************************************************
-_No_competing_thread_
-void
+_No_competing_thread_ void
 MutexInit(
-    OUT         PMUTEX      Mutex,
-    IN          BOOLEAN     Recursive
-    );
+    OUT PMUTEX Mutex,
+    IN BOOLEAN Recursive);
 
 //******************************************************************************
 // Function:     MutexSetName
@@ -72,12 +69,10 @@ MutexInit(
 // NOTE:         It is not mandatory to call this function. The name helps
 //               helps to identify it in the debugger.
 //******************************************************************************
-_No_competing_thread_
-void
+_No_competing_thread_ void
 MutexSetName(
-    INOUT       PMUTEX      Mutex,
-    IN          char*       Name
-    );
+    INOUT PMUTEX Mutex,
+    IN char *Name);
 
 //******************************************************************************
 // Function:     MutexAcquire
@@ -88,10 +83,8 @@ MutexSetName(
 //******************************************************************************
 ACQUIRES_EXCL_AND_REENTRANT_LOCK(*Mutex)
 REQUIRES_NOT_HELD_LOCK(*Mutex)
-void
-MutexAcquire(
-    INOUT       PMUTEX      Mutex
-    );
+void MutexAcquire(
+    INOUT PMUTEX Mutex);
 
 //******************************************************************************
 // Function:     MutexRelease
@@ -103,10 +96,8 @@ MutexAcquire(
 //******************************************************************************
 RELEASES_EXCL_AND_REENTRANT_LOCK(*Mutex)
 REQUIRES_EXCL_LOCK(*Mutex)
-void
-MutexRelease(
-    INOUT       PMUTEX      Mutex
-    );
+void MutexRelease(
+    INOUT PMUTEX Mutex);
 
 //******************************************************************************
 // Function:     MutexDestroy
@@ -115,8 +106,17 @@ MutexRelease(
 // Parameter:    INOUT PMUTEX Mutex
 // NOTE:         It should be called to notify the debugger.
 //******************************************************************************
-_No_competing_thread_
-void
+_No_competing_thread_ void
 MutexDestroy(
-    INOUT       PMUTEX      Mutex
-    );
+    INOUT PMUTEX Mutex);
+
+static
+BOOLEAN
+_MutexDonatePriority(
+    IN PTHREAD Donor,
+    IN PMUTEX FirstMutex);
+
+void MutexDonationLock(OUT INTR_STATE* State);
+void MutexDonationUnlock(IN INTR_STATE State);
+
+void MutexRecomputeThreadPriority(INOUT PTHREAD Thread);

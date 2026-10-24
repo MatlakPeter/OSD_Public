@@ -1,6 +1,7 @@
 #pragma once
 
 #include "thread_defs.h"
+#include "lock_common.h"
 
 //******************************************************************************
 // Function:     ThreadCreate
@@ -20,12 +21,11 @@
 //******************************************************************************
 STATUS
 ThreadCreate(
-    IN_Z        char*               Name,
-    IN          THREAD_PRIORITY     Priority,
-    IN          PFUNC_ThreadStart   Function,
-    IN_OPT      PVOID               Context,
-    OUT_PTR     PTHREAD*            Thread
-    );
+    IN_Z char *Name,
+    IN THREAD_PRIORITY Priority,
+    IN PFUNC_ThreadStart Function,
+    IN_OPT PVOID Context,
+    OUT_PTR PTHREAD *Thread);
 
 //******************************************************************************
 // Function:     ThreadYield
@@ -36,10 +36,8 @@ ThreadCreate(
 // Returns:      void
 // Parameter:    void
 //******************************************************************************
-void
-ThreadYield(
-    void
-    );
+void ThreadYield(
+    void);
 
 //******************************************************************************
 // Function:     ThreadExit
@@ -47,10 +45,8 @@ ThreadYield(
 // Returns:      void
 // Parameter:    IN STATUS ExitStatus
 //******************************************************************************
-void
-ThreadExit(
-    IN      STATUS              ExitStatus
-    );
+void ThreadExit(
+    IN STATUS ExitStatus);
 
 //******************************************************************************
 // Function:     ThreadWaitForTermination
@@ -60,11 +56,9 @@ ThreadExit(
 // Parameter:    IN PTHREAD Thread
 // Parameter:    OUT STATUS * ExitStatus
 //******************************************************************************
-void
-ThreadWaitForTermination(
-    IN      PTHREAD             Thread,
-    OUT     STATUS*             ExitStatus
-    );
+void ThreadWaitForTermination(
+    IN PTHREAD Thread,
+    OUT STATUS *ExitStatus);
 
 //******************************************************************************
 // Function:     ThreadCloseHandle
@@ -77,10 +71,8 @@ ThreadWaitForTermination(
 //               termination status call this function only after you called
 //               ThreadWaitForTermination.
 //******************************************************************************
-void
-ThreadCloseHandle(
-    INOUT   PTHREAD             Thread
-    );
+void ThreadCloseHandle(
+    INOUT PTHREAD Thread);
 
 //******************************************************************************
 // Function:     ThreadGetName
@@ -89,11 +81,9 @@ ThreadCloseHandle(
 // Parameter:    IN_OPT PTHREAD Thread If NULL returns the name of the
 //               current thread.
 //******************************************************************************
-const
-char*
+const char *
 ThreadGetName(
-    IN_OPT  PTHREAD             Thread
-    );
+    IN_OPT PTHREAD Thread);
 
 //******************************************************************************
 // Function:     ThreadGetId
@@ -102,10 +92,8 @@ ThreadGetName(
 // Parameter:    IN_OPT PTHREAD Thread - If NULL returns the ID of the
 //               current thread.
 //******************************************************************************
-TID
-ThreadGetId(
-    IN_OPT  PTHREAD             Thread
-    );
+TID ThreadGetId(
+    IN_OPT PTHREAD Thread);
 
 //******************************************************************************
 // Function:     ThreadGetPriority
@@ -117,5 +105,24 @@ ThreadGetId(
 //******************************************************************************
 THREAD_PRIORITY
 ThreadGetPriority(
-    IN_OPT  PTHREAD             Thread
-    );
+    IN_OPT PTHREAD Thread);
+
+INT64(CDECL _ThreadPriorityCopmpareListElems)(
+    IN PLIST_ENTRY FirstElem,
+    IN PLIST_ENTRY SecondElem,
+    IN_OPT PVOID Context);
+
+static BOOLEAN
+_ThreadShouldPreemptCurrent(
+    void);
+
+static STATUS
+_ThreadPreemptCheckIpi(
+    IN_OPT PVOID Context);
+
+void ThreadYieldIfPreempted();
+
+BOOLEAN
+ThreadRepositionAfterPriorityChange(
+    INOUT PTHREAD Thread);
+
